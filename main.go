@@ -24,11 +24,11 @@ func readOffer(offerFile string) webrtc.SessionDescription {
 	if err != nil {
 		panic(err)
 	}
-	offer := webrtc.SessionDescription{}
 	offerJson, err := base64.StdEncoding.DecodeString(string(offerBuf))
 	if err != nil {
 		panic(err)
 	}
+	offer := webrtc.SessionDescription{}
 	err = json.Unmarshal(offerJson, &offer)
 	if err != nil {
 		panic(err)
