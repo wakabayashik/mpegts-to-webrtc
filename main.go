@@ -125,13 +125,6 @@ func addTrack(peerConnection *webrtc.PeerConnection, mimeType string, streamID s
 	return track
 }
 
-type trkCtx struct {
-	PID       uint16
-	PES       *astits.PESData
-	timestamp int64
-	track     *webrtc.TrackLocalStaticSample
-}
-
 func getDTS(PES *astits.PESData) int64 {
 	if PES == nil || PES.Header == nil || PES.Header.OptionalHeader == nil {
 		return -1
@@ -145,54 +138,22 @@ func getDTS(PES *astits.PESData) int64 {
 	return -1
 }
 
-func (ctx *trkCtx) PushVid(nextPES *astits.PESData, firstVideoDTS *int64, timeBase time.Time) {
-	DTS := getDTS(ctx.PES)
-	nextDTS := getDTS(nextPES)
-	diff := (nextDTS - DTS) & 0x1ffffffff
-	if *firstVideoDTS == -1 {
-		*firstVideoDTS = DTS
-		ctx.timestamp = 0
-	}
-	log.Printf("vidPES %d %d %d\n", len(ctx.PES.Data), ctx.timestamp, diff)
-	timestamp := timeBase.Add(time.Duration(ctx.timestamp * 1e9 / 90000))
-	duration := time.Duration(diff * 1e9 / 90000)
-	// log.Printf("pushVid %s %d\n", timestamp.String(), duration)
-	if err := ctx.track.WriteSample(media.Sample{Data: ctx.PES.Data, Timestamp: timestamp, Duration: duration}); err != nil {
-		panic(err)
-	}
-	ctx.timestamp += diff
-}
-
-func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64, timeBase time.Time) {
-	DTS := getDTS(ctx.PES)
-	nextDTS := getDTS(nextPES)
-	diff := (nextDTS - DTS) & 0x1ffffffff
-	if *firstVideoDTS == -1 {
-		return
-	} else if *firstVideoDTS > 0 {
-		diffAV := (DTS - *firstVideoDTS) & 0x1ffffffff
-		if diffAV > 0xffffffff {
-			return
-		}
-		ctx.timestamp = diffAV
-		*firstVideoDTS = -2
-	}
-	log.Printf("audPES %d %d, %d\n", len(ctx.PES.Data), ctx.timestamp, diff)
+func getOpusSamplePositions(pesData []byte) []int {
 	poss := []int{}
-	buflen := len(ctx.PES.Data)
+	buflen := len(pesData)
 	for pos := 0; pos+2 < buflen; {
-		control_header_prefix := (int(ctx.PES.Data[pos]) << 3) | int(ctx.PES.Data[pos+1]>>5)
+		control_header_prefix := (int(pesData[pos]) << 3) | int(pesData[pos+1]>>5)
 		if control_header_prefix != 1023 {
 			// panic("no sync")
 			pos += 1
 			continue
 		}
-		start_trim_flag := (ctx.PES.Data[pos+1] >> 4) & 1
-		end_trim_flag := (ctx.PES.Data[pos+1] >> 3) & 1
-		control_extension_flag := (ctx.PES.Data[pos+1] >> 2) & 1
+		start_trim_flag := (pesData[pos+1] >> 4) & 1
+		end_trim_flag := (pesData[pos+1] >> 3) & 1
+		control_extension_flag := (pesData[pos+1] >> 2) & 1
 		payload_size := 0
 		for pos += 2; pos < buflen; pos++ {
-			size := int(ctx.PES.Data[pos])
+			size := int(pesData[pos])
 			payload_size += size
 			if size != 255 {
 				pos++
@@ -209,7 +170,7 @@ func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64, timeBa
 			if pos >= buflen {
 				break
 			}
-			control_extension_length := int(ctx.PES.Data[pos])
+			control_extension_length := int(pesData[pos])
 			pos += 1 + control_extension_length
 		}
 		if pos+payload_size > buflen {
@@ -219,27 +180,77 @@ func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64, timeBa
 		poss = append(poss, pos+payload_size)
 		pos += payload_size
 	}
-	numBufs := len(poss) / 2
-	if numBufs <= 0 {
+	return poss
+}
+
+type trkCtx struct {
+	PID       uint16
+	PES       *astits.PESData
+	timestamp int64
+	track     *webrtc.TrackLocalStaticSample
+}
+
+func (ctx *trkCtx) getDuration(nextPES *astits.PESData) time.Duration {
+	DTS := getDTS(ctx.PES)
+	nextDTS := getDTS(nextPES)
+	if DTS < 0 || nextDTS < 0 {
+		log.Println("!!! Missing DTS !!!")
+		// panic("!!! Missing DTS !!!")
+		return 0
+	}
+	diff := (nextDTS - DTS) & 0x1ffffffff
+	if diff > 0xffffffff {
+		log.Println("!!! Inversed DTS !!!")
+		// panic("!!! Inversed DTS !!!")
+		return 0
+	}
+	duration := time.Duration(ctx.timestamp * 1e9 / 90000) // 90000Hz to nanosecond
+	ctx.timestamp += diff
+	return time.Duration(ctx.timestamp * 1e9 / 90000) - duration
+}
+
+func (ctx *trkCtx) PushVid(nextPES *astits.PESData, firstVideoDTS *int64) {
+	if *firstVideoDTS == -1 {
+		*firstVideoDTS = getDTS(ctx.PES)
+		ctx.timestamp = 0
+	}
+	duration := ctx.getDuration(nextPES)
+	log.Printf("pushVid %d %d\n", len(ctx.PES.Data), duration)
+	if err := ctx.track.WriteSample(media.Sample{Data: ctx.PES.Data, Duration: duration}); err != nil {
+		panic(err)
+	}
+}
+
+func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64) {
+	if *firstVideoDTS == -1 {
+		return
+	} else if *firstVideoDTS > 0 {
+		diffAV := (getDTS(ctx.PES) - *firstVideoDTS) & 0x1ffffffff
+		if diffAV > 0xffffffff {
+			return
+		}
+		ctx.timestamp = diffAV
+		*firstVideoDTS = -2
+	}
+	duration := ctx.getDuration(nextPES)
+	poss := getOpusSamplePositions(ctx.PES.Data)
+	numSamples := len(poss) / 2
+	if numSamples <= 0 {
 		return
 	}
-	bufDur := diff / int64(numBufs)
-	timestamp := timeBase.Add(time.Duration(ctx.timestamp * 1e9 / 90000))
-	for i := 0; i < numBufs; i++ {
+	sampleDuration := duration / time.Duration(numSamples)
+	for i := 0; i < numSamples; i++ {
 		buf := ctx.PES.Data[poss[i*2]:poss[i*2+1]]
-		var duration time.Duration
-		if i+1 < numBufs {
-			duration = time.Duration(bufDur * 1e9 / 90000)
+		if i+1 < numSamples {
+			duration -= sampleDuration
 		} else {
-			duration = time.Duration((bufDur + diff - bufDur*int64(numBufs)) * 1e9 / 90000)
+			sampleDuration = duration
 		}
-		// log.Printf("pushAud %s %d\n", timestamp.String(), duration)
-		if err := ctx.track.WriteSample(media.Sample{Data: buf, Timestamp: timestamp, Duration: duration}); err != nil {
+		log.Printf("pushAud %d %d\n", len(buf), sampleDuration)
+		if err := ctx.track.WriteSample(media.Sample{Data: buf, Duration: sampleDuration}); err != nil {
 			panic(err)
 		}
-		timestamp = timestamp.Add(duration)
 	}
-	ctx.timestamp += diff
 }
 
 func main() {
@@ -263,7 +274,6 @@ func main() {
 	var peerConnection *webrtc.PeerConnection
 	var ready = false
 	var firstVideoDTS int64 = -1
-	var timeBase time.Time
 	stdin := bufio.NewReader(os.Stdin)
 	demux := astits.NewDemuxer(demuxCtx, stdin)
 	for {
@@ -321,21 +331,20 @@ func main() {
 				iceConnectedCtx := preparePeerConnection(peerConnection, demuxCtxCancel, offer)
 				// Wait for connection established
 				<-iceConnectedCtx.Done()
-				ready = true
-				timeBase = time.Now().Local()
 				if vid == nil {
 					firstVideoDTS = -2
 				}
+				ready = true
 				log.Println("connection established")
 			}()
 		case vid != nil && vid.PID == d.PID:
 			if vid.PES != nil && ready {
-				vid.PushVid(d.PES, &firstVideoDTS, timeBase)
+				vid.PushVid(d.PES, &firstVideoDTS)
 			}
 			vid.PES = d.PES
 		case aud != nil && aud.PID == d.PID:
 			if aud.PES != nil && ready {
-				aud.PushAud(d.PES, &firstVideoDTS, timeBase)
+				aud.PushAud(d.PES, &firstVideoDTS)
 			}
 			aud.PES = d.PES
 		}

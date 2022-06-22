@@ -2,5 +2,5 @@
 demux mpegts to H264 and Opus then send to a WebRTC client.
 
 ```
-ffmpeg -y -i {{src}} -c:v copy -c:a libopus -ar 48000 -ac 2 -f mpegts pipe:1 | mpegts-to-webrtc -offerFile {{offer-file-path}}
+ffmpeg -y -i {{src}} -c:v copy -c:a libopus -ar 48000 -ac 2 -f mpegts -pes_payload_size 0 pipe:1 | mpegts-to-webrtc -offerFile {{offer-file-path}}
 ```
