@@ -224,7 +224,7 @@ func (ctx *trkCtx) PushVid(nextPES *astits.PESData, firstVideoDTS *int64) {
 func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64) {
 	if *firstVideoDTS == -1 {
 		return
-	} else if *firstVideoDTS > 0 {
+	} else if *firstVideoDTS >= 0 {
 		diffAV := (getDTS(ctx.PES) - *firstVideoDTS) & 0x1ffffffff
 		if diffAV > 0xffffffff {
 			return
