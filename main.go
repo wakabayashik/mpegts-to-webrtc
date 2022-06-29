@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -256,6 +257,7 @@ func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64) {
 func main() {
 	offerFile := flag.String("offerFile", "", "path to file which contains base64 offer string")
 	stunURL := flag.String("stun", "stun:stun.1.google.com:19302", "STUN server URL")
+	inputTimeout := flag.Int("inputTimeout", 10, "time (in seconds) before giving up waiting for a stream from stdin")
 	flag.Parse()
 	offer := readOffer(*offerFile)
 
@@ -277,7 +279,18 @@ func main() {
 	stdin := bufio.NewReader(os.Stdin)
 	demux := astits.NewDemuxer(demuxCtx, stdin)
 	for {
+		inputWaitCtx, inputWaitCtxCancel := context.WithTimeout(demuxCtx, time.Duration(*inputTimeout) * time.Second)
+		go func() {
+			<-inputWaitCtx.Done()
+			err := inputWaitCtx.Err()
+			if errors.Is(err, context.DeadlineExceeded) {
+				// input is stalled
+				log.Printf("input %v", err)
+				os.Exit(1)
+			}
+		}()
 		d, err := demux.NextData()
+		inputWaitCtxCancel()
 		if err != nil {
 			log.Printf("err: \n", err)
 			break
@@ -328,9 +341,8 @@ func main() {
 				}
 			}
 			go func() {
-				iceConnectedCtx := preparePeerConnection(peerConnection, demuxCtxCancel, offer)
 				// Wait for connection established
-				<-iceConnectedCtx.Done()
+				<-preparePeerConnection(peerConnection, demuxCtxCancel, offer).Done()
 				if vid == nil {
 					firstVideoDTS = -2
 				}
