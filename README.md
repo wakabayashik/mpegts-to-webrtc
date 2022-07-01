@@ -1,5 +1,5 @@
 # mpegts-to-webrtc
-[![Go Report](https://goreportcard.com/badge/github.com/wakabayashik/mpegts-to-webrtc)](https://goreportcard.com/badge/github.com/wakabayashik/mpegts-to-webrtc)
+[![Go Report](https://goreportcard.com/badge/github.com/wakabayashik/mpegts-to-webrtc)](https://goreportcard.com/report/github.com/wakabayashik/mpegts-to-webrtc)
 
 demux mpegts to H264 and Opus then send to a WebRTC client using [pion](https://github.com/pion/webrtc).
 
