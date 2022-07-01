@@ -5,13 +5,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,11 +23,29 @@ import (
 )
 
 func readOffer(offerFile string) webrtc.SessionDescription {
-	offerBuf, err := ioutil.ReadFile(offerFile)
-	if err != nil {
-		panic(err)
+	var offerBase64 string
+	if offerFile == "" {
+		// read offer from stdin
+		input := bufio.NewReader(os.Stdin)
+		for len(offerBase64) == 0 {
+			var err error
+			offerBase64, err = input.ReadString('\n')
+			if err != io.EOF {
+				if err != nil {
+					panic(err)
+				}
+			}
+			offerBase64 = strings.TrimSpace(offerBase64)
+		}
+	} else {
+		// read offer from file
+		offerBuf, err := ioutil.ReadFile(offerFile)
+		if err != nil {
+			panic(err)
+		}
+		offerBase64 = string(offerBuf)
 	}
-	offerJson, err := base64.StdEncoding.DecodeString(string(offerBuf))
+	offerJson, err := base64.StdEncoding.DecodeString(offerBase64)
 	if err != nil {
 		panic(err)
 	}
@@ -35,6 +55,24 @@ func readOffer(offerFile string) webrtc.SessionDescription {
 		panic(err)
 	}
 	return offer
+}
+
+func prepareInput(ffmpeg string, ffmpegArgs []string) *bufio.Reader {
+	if ffmpeg == "" {
+		// read mpegts from stdin
+		return bufio.NewReader(os.Stdin)
+	}
+	// launch ffmpeg then read the stdout of child process
+	log.Printf("%s %v\n", ffmpeg, ffmpegArgs)
+	cmd := exec.Command(ffmpeg, ffmpegArgs...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		panic(err)
+	}
+	if err = cmd.Start(); err != nil {
+		panic(err)
+	}
+	return bufio.NewReader(stdout)
 }
 
 func preparePeerConnection(peerConnection *webrtc.PeerConnection, demuxContextCancel context.CancelFunc, offer webrtc.SessionDescription) context.Context {
@@ -255,10 +293,24 @@ func (ctx *trkCtx) PushAud(nextPES *astits.PESData, firstVideoDTS *int64) {
 }
 
 func main() {
-	offerFile := flag.String("offerFile", "", "path to file which contains base64 offer string")
-	stunURL := flag.String("stun", "stun:stun.1.google.com:19302", "STUN server URL")
-	inputTimeout := flag.Int("inputTimeout", 10, "time (in seconds) before giving up waiting for a stream from stdin")
-	flag.Parse()
+	var args []string
+	var ffmpegArgs []string
+	for i := 1; i < len(os.Args); i++ {
+		args = append(args, os.Args[i])
+		if os.Args[i] != "-ffmpeg" {
+			continue
+		}
+		if i+1 < len(os.Args) {
+			args = append(args, os.Args[i+1])
+			ffmpegArgs = os.Args[i+2:]
+		}
+		break
+	}
+	newFlag := flag.NewFlagSet("mpegts-to-webrtc", flag.ExitOnError)
+	offerFile := newFlag.String("offerFile", "", "path to file which contains base64 offer string")
+	stunURL := newFlag.String("stun", "stun:stun.1.google.com:19302", "STUN server URL")
+	ffmpeg := newFlag.String("ffmpeg", "", "path to ffmpeg executable file and arguments")
+	newFlag.Parse(args)
 	offer := readOffer(*offerFile)
 
 	demuxCtx, demuxCtxCancel := context.WithCancel(context.Background())
@@ -276,21 +328,10 @@ func main() {
 	var peerConnection *webrtc.PeerConnection
 	var ready = false
 	var firstVideoDTS int64 = -1
-	stdin := bufio.NewReader(os.Stdin)
-	demux := astits.NewDemuxer(demuxCtx, stdin)
+	input := prepareInput(*ffmpeg, ffmpegArgs)
+	demux := astits.NewDemuxer(demuxCtx, input)
 	for {
-		inputWaitCtx, inputWaitCtxCancel := context.WithTimeout(demuxCtx, time.Duration(*inputTimeout) * time.Second)
-		go func() {
-			<-inputWaitCtx.Done()
-			err := inputWaitCtx.Err()
-			if errors.Is(err, context.DeadlineExceeded) {
-				// input is stalled
-				log.Printf("input %v", err)
-				os.Exit(1)
-			}
-		}()
 		d, err := demux.NextData()
-		inputWaitCtxCancel()
 		if err != nil {
 			log.Printf("err: \n", err)
 			break
