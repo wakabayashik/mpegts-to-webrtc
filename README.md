@@ -1,5 +1,6 @@
 # mpegts-to-webrtc
 [![Go Report](https://goreportcard.com/badge/github.com/wakabayashik/mpegts-to-webrtc)](https://goreportcard.com/report/github.com/wakabayashik/mpegts-to-webrtc)
+[![CodeQL](https://github.com/wakabayashik/mpegts-to-webrtc/actions/workflows/codeql.yml/badge.svg)](https://github.com/wakabayashik/mpegts-to-webrtc/actions/workflows/codeql.yml)
 
 demux mpegts to H264 and Opus then send to a WebRTC client using [pion](https://github.com/pion/webrtc).
 
