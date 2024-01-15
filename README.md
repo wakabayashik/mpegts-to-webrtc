@@ -8,7 +8,7 @@ demux mpegts to H264 and Opus then send to a WebRTC client using [pion](https://
     * read base64 offer from file (needed -offerFile)
     * read mpegts stream from stdin
 
-```
+```sh
 ffmpeg -i {{src}} -c:v copy -c:a libopus -ar 48000 -ac 2 -f mpegts -pes_payload_size 0 pipe:1 | mpegts-to-webrtc -offerFile {{offer-file-path}}
 ```
 
@@ -16,6 +16,16 @@ ffmpeg -i {{src}} -c:v copy -c:a libopus -ar 48000 -ac 2 -f mpegts -pes_payload_
     * read base64 offer from stdin
     * launch ffmpeg as child process and read stdout (needed -ffmpeg)
 
-```
+```sh
 mpegts-to-webrtc -ffmpeg ffmpeg -i {{src}} -c:v copy -c:a libopus -ar 48000 -ac 2 -f mpegts -pes_payload_size 0 pipe:1 < {{offer-file-path}}
+```
+
+* offer from stdin, mpegts from UDP
+    * read base64 offer from stdin
+    * read mpegts from UDP
+        * pkt_size should be aligned to a multiple of TS packet size (N*188)
+
+```sh
+ffmpeg -i {{src}} -c:v copy -c:a libopus -ar 48000 -ac 2 -f mpegts -pes_payload_size 0 udp://localhost:1000?pkt_size=1316
+mpegts-to-webrtc -udp :1000 < {{offer-file-path}}
 ```

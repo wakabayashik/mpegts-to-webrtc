@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -57,10 +58,25 @@ func readOffer(offerFile string) webrtc.SessionDescription {
 	return offer
 }
 
-func prepareInput(ffmpeg string, ffmpegArgs []string) *bufio.Reader {
+func prepareInput(udp string, ffmpeg string, ffmpegArgs []string) (*bufio.Reader, *net.UDPConn) {
+	if udp != "" {
+		// read mpegts from UDP
+		udpAddr, err1 := net.ResolveUDPAddr("udp", udp)
+		if err1 != nil {
+			log.Printf("net.ResolveUDPAddr err: %v\n", err1)
+			panic(err1)
+		}
+		log.Printf("udpAddr [%v]\n", udpAddr)
+		udpConn, err2 := net.ListenUDP("udp", udpAddr)
+		if err2 != nil {
+			log.Printf("net.ListenUDP err: %v\n", err2)
+			panic(err2)
+		}
+		return bufio.NewReader(udpConn), udpConn
+	}
 	if ffmpeg == "" {
 		// read mpegts from stdin
-		return bufio.NewReader(os.Stdin)
+		return bufio.NewReader(os.Stdin), nil
 	}
 	// launch ffmpeg then read the stdout of child process
 	log.Printf("%s %v\n", ffmpeg, ffmpegArgs)
@@ -72,7 +88,7 @@ func prepareInput(ffmpeg string, ffmpegArgs []string) *bufio.Reader {
 	if err = cmd.Start(); err != nil {
 		panic(err)
 	}
-	return bufio.NewReader(stdout)
+	return bufio.NewReader(stdout), nil
 }
 
 func preparePeerConnection(peerConnection *webrtc.PeerConnection, demuxContextCancel context.CancelFunc, offer webrtc.SessionDescription) context.Context {
@@ -310,6 +326,7 @@ func main() {
 	offerFile := newFlag.String("offerFile", "", "path to file which contains base64 offer string")
 	stunURL := newFlag.String("stun", "stun:stun.1.google.com:19302", "STUN server URL")
 	ffmpeg := newFlag.String("ffmpeg", "", "path to ffmpeg executable file and arguments")
+	udp := newFlag.String("udp", "", "UDP endpoint where to receive mpegts stream")
 	newFlag.Parse(args)
 	offer := readOffer(*offerFile)
 
@@ -328,8 +345,11 @@ func main() {
 	var peerConnection *webrtc.PeerConnection
 	var ready = false
 	var firstVideoDTS int64 = -1
-	input := prepareInput(*ffmpeg, ffmpegArgs)
+	input, udpConn := prepareInput(*udp, *ffmpeg, ffmpegArgs)
 	demux := astits.NewDemuxer(demuxCtx, input)
+	if udpConn != nil {
+		defer udpConn.Close()
+	}
 	for {
 		d, err := demux.NextData()
 		if err != nil {
